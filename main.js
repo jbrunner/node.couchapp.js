@@ -5,6 +5,7 @@ var path = require('path')
   , crypto = require('crypto')
   , mimetypes = require('./mimetypes')
   , spawn = require('child_process').spawn
+  , wrench = require('wrench')
   ;
 
 // Common request headers
@@ -163,7 +164,7 @@ function createApp (doc, url, cb) {
   
   app.push = function (callback) {
     var revpos
-      , pending_dirs = 0
+      , atts_added = 0
       ;
     
     console.log('Preparing.')
@@ -183,52 +184,46 @@ function createApp (doc, url, cb) {
     } catch(e){}
 
     app.doc.__attachments.forEach(function (att) {
-      watch.walk(att.root, {ignoreDotFiles:true}, function (err, files) {
-        pending_dirs += 1;
-        var pending_files = Object.keys(files).length;
-        for (i in files) { (function (f) {
-          fs.readFile(f, function (err, data) {
-            if(f.match(coffeeExt)){
-              data = new Buffer( coffeeCompile.compile(data.toString()) );
-              f = f.replace(coffeeExt,'.js');
-            }
-            f = f.replace(att.root, att.prefix || '').replace(/\\/g,"/");
-            if (f[0] == '/') f = f.slice(1)
-            if (!err) {
-              var d = data.toString('base64')
-                , md5 = crypto.createHash('md5')
-                , mime = mimetypes.lookup(path.extname(f).slice(1))
-                ;
-              md5.update(d)
-              md5 = md5.digest('hex')
-              if (app.doc.attachments_md5[f] && app.doc._attachments[f]) {
-                if (app.doc._attachments[f].revpos === app.doc.attachments_md5[f].revpos &&
-                    app.doc.attachments_md5[f].md5 === md5) {
-                  pending_files -= 1;
-                  if(pending_files === 0){
-                    pending_dirs -= 1;
-                    if(pending_dirs === 0){
-                      push(callback);
-                    }
-                  }
-                  return; // Does not need to be updated.
-                }
-              }
-              app.doc._attachments[f] = {data:d, content_type:mime};
-              app.doc.attachments_md5[f] = {revpos:revpos + 1, md5:md5};
-            }
-            pending_files -= 1
-            if(pending_files === 0){
-              pending_dirs -= 1;
-              if(pending_dirs === 0){
-                push(callback);
-              }
-            }
-          })
-        })(i)}
-      })
-    })
-    if (!app.doc.__attachments || app.doc.__attachments.length == 0) push(callback);
+      var files = wrench.readdirSyncRecursive(att.root);
+      files.forEach(function(filename) {
+        var f = att.root + '/' + filename;
+        
+        if (fs.statSync(f).isDirectory()) return;
+        
+        var data = fs.readFileSync(f);
+        
+        if(f.match(coffeeExt)) {
+          data = new Buffer( coffeeCompile.compile(data.toString()) );
+          f = f.replace(coffeeExt,'.js');
+        }
+        
+        f = f.replace(att.root, att.prefix || '').replace(/\\/g,"/");
+        if (f[0] == '/') f = f.slice(1);
+        
+        var d = data.toString('base64')
+          , md5 = crypto.createHash('md5')
+          , mime = mimetypes.lookup(path.extname(f).slice(1))
+          ;
+        md5.update(d)
+        md5 = md5.digest('hex')
+
+        if (app.doc.attachments_md5[f] && app.doc._attachments[f]) {
+          if (app.doc._attachments[f].revpos === app.doc.attachments_md5[f].revpos &&
+              app.doc.attachments_md5[f].md5 === md5) {
+            return; // Does not need to be updated.
+          }
+        }
+        atts_added++;
+        app.doc._attachments[f] = {data:d, content_type:mime};
+        app.doc.attachments_md5[f] = {revpos:revpos + 1, md5:md5};
+      });
+    });
+    
+    if (atts_added > 0) {
+      console.log('Added ' + atts_added + ' attachments.');
+    }
+    
+    push(callback);
   }  
   
   app.sync = function (callback) {
